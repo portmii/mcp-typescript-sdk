@@ -1,0 +1,12 @@
+.idea/
+
+.env
+.env.*
+node_modules/
+dist/
+coverage/
+*.tgz
+.tmp/
+.superpowers/
+hs_err_pid*.log
+replay_pid*.log

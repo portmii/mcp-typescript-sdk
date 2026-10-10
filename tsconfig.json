@@ -1,0 +1,23 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "NodeNext",
+		"moduleResolution": "NodeNext",
+		"baseUrl": ".",
+		"paths": {
+			"@portmii/mcp": ["src/index.ts"]
+		},
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"verbatimModuleSyntax": true,
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"types": ["node", "vitest/globals"]
+	},
+	"include": ["src", "test", "examples", "tsup.config.ts", "vitest.config.ts", "eslint.config.mjs"]
+}
