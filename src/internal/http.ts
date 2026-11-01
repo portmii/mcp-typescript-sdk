@@ -145,8 +145,27 @@ function responseError(status: number, payload: unknown, commit: boolean): Portm
 				: 'HTTP_ERROR',
 		status,
 		...(typeof details.reasonCode === 'string' ? { reasonCode: details.reasonCode } : {}),
-		...(typeof details.correlationId === 'string' ? { correlationId: details.correlationId } : {})
+		...(typeof details.correlationId === 'string' ? { correlationId: details.correlationId } : {}),
+		...(isRecord(details.grant) ? { grant: details.grant } : {})
 	});
+}
+
+const UNAVAILABLE_REASONS = new Set(['feature_disabled', 'dependency_unavailable']);
+
+/** Portmii could not decide: network error, timeout, 5xx or a disabled runtime dependency. */
+export function isUnavailable(error: unknown): boolean {
+	return isRetryable(error) || (error instanceof PortmiiError && UNAVAILABLE_REASONS.has(error.reasonCode ?? ''));
+}
+
+/** Portmii answered with a 4xx denial and a reason code. */
+export function isDenial(error: unknown): error is PortmiiError & { reasonCode: string } {
+	return (
+		error instanceof PortmiiError &&
+		error.reasonCode !== undefined &&
+		(error.status ?? 0) >= 400 &&
+		(error.status ?? 0) < 500 &&
+		!isUnavailable(error)
+	);
 }
 
 /** HTTPS only; plain HTTP is accepted for loopback hosts during local development. */

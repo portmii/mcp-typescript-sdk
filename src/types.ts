@@ -17,6 +17,19 @@ export type PortmiiConfig = {
 	baseUrl?: string | URL;
 	fetch?: typeof globalThis.fetch;
 	timeoutMs?: number;
+	/**
+	 * Required. What to do when Portmii cannot answer (network error, timeout, 5xx,
+	 * `feature_disabled`, `dependency_unavailable`). `'allow'` runs the tool without metering.
+	 * Customer API keys are only checked for format locally, so `'allow'` accepts any well-formed key then.
+	 */
+	onUnavailable: PortmiiAccess;
+	/**
+	 * Called when Portmii denies a call. Return `'allow'` to run the tool without metering. Default: `'deny'`.
+	 * `reasonCode` can also be an authentication failure such as `invalid_customer_credential`.
+	 */
+	authorize?: (decision: PortmiiDecision) => PortmiiAccess | Promise<PortmiiAccess>;
+	/** Called before a tool runs without a usage reservation. Awaited; a thrown error or rejection fails the call. */
+	onUnmetered?: (info: { toolName: string; reason: 'authorized' | 'unavailable' }) => unknown;
 } & (
 	| {
 			authType: 'API_KEY';
@@ -29,6 +42,16 @@ export type PortmiiConfig = {
 			serverUrl: string | URL;
 	  }
 );
+
+export type PortmiiAccess = 'allow' | 'deny';
+
+/** Portmii's answer to a denied call. Input for your own access decision. */
+export type PortmiiDecision = {
+	toolName: string;
+	reasonCode: string;
+	/** Subscription facts from Portmii (`source`, `planId`, `validTo`), when provided. */
+	grant?: Record<string, unknown>;
+};
 
 /** Authentication result that `portmii.auth` stores on `req.auth`. */
 export type PortmiiAuthInfo = {

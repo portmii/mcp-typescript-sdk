@@ -19,7 +19,12 @@ it('meters official MCP v1 HTTP callbacks with and without input schemas', async
 			expiresAt: new Date(Date.now() + 300_000).toISOString()
 		});
 	});
-	const sdk = createPortmii({ authType: 'API_KEY', providerKey: 'pmcp_sk_test', baseUrl: api.baseUrl });
+	const sdk = createPortmii({
+		authType: 'API_KEY',
+		providerKey: 'pmcp_sk_test',
+		baseUrl: api.baseUrl,
+		onUnavailable: 'deny'
+	});
 	const server = createServer((req: PortmiiRequest, res) => {
 		sdk.auth(req, res, (error) => {
 			if (error) return sendJson(res, 500, {});

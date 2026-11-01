@@ -49,7 +49,8 @@ function portmii(authType: PortmiiConfig['authType'] = 'OAUTH_OR_API_KEY'): Port
 		authType,
 		providerKey: 'pmcp_sk_test',
 		baseUrl: portmiiApi.baseUrl,
-		serverUrl: 'http://localhost:3333/mcp'
+		serverUrl: 'http://localhost:3333/mcp',
+		onUnavailable: 'deny'
 	});
 }
 
@@ -208,17 +209,22 @@ describe('portmii.tool', () => {
 
 describe('errors', () => {
 	const context = { authInfo: { token: API_KEY }, requestId: 1 };
-	const withFetch = (fetch: typeof globalThis.fetch, authType: PortmiiConfig['authType'] = 'OAUTH_OR_API_KEY') =>
+	const withFetch = (
+		fetch: typeof globalThis.fetch,
+		authType: PortmiiConfig['authType'] = 'OAUTH_OR_API_KEY',
+		policy: Pick<PortmiiConfig, 'onUnavailable' | 'authorize' | 'onUnmetered'> = { onUnavailable: 'deny' }
+	) =>
 		createPortmii({
 			authType,
 			providerKey: 'pmcp_sk_test',
 			serverUrl: 'http://localhost:3333/mcp',
 			fetch,
-			timeoutMs: 50
+			timeoutMs: 50,
+			...policy
 		});
 
 	it('validates configuration', () => {
-		const base = { providerKey: 'pmcp_sk_test', serverUrl: 'https://x.example/mcp' };
+		const base = { providerKey: 'pmcp_sk_test', serverUrl: 'https://x.example/mcp', onUnavailable: 'deny' as const };
 		expect(() => createPortmii({ ...base, authType: 'NONE' as 'OAUTH' })).toThrow(
 			expect.objectContaining({ code: 'INVALID_CONFIG' })
 		);
@@ -231,10 +237,14 @@ describe('errors', () => {
 		expect(() => createPortmii({ ...base, authType: 'OAUTH', serverUrl: 'https://x.example/mcp#a' })).toThrow(
 			'fragment'
 		);
-		expect(() => createPortmii({ authType: 'API_KEY', providerKey: 'k' })).not.toThrow();
+		expect(() => createPortmii({ authType: 'API_KEY', providerKey: 'k' } as PortmiiConfig)).toThrow('onUnavailable');
+		expect(() => createPortmii({ authType: 'API_KEY', providerKey: 'k', onUnavailable: 'maybe' as 'deny' })).toThrow(
+			expect.objectContaining({ code: 'INVALID_CONFIG' })
+		);
+		expect(() => createPortmii({ authType: 'API_KEY', providerKey: 'k', onUnavailable: 'allow' })).not.toThrow();
 		process.env.PORTMII_PROVIDER_KEY = 'pmcp_sk_env';
 		try {
-			expect(() => createPortmii({ authType: 'API_KEY' })).not.toThrow();
+			expect(() => createPortmii({ authType: 'API_KEY', onUnavailable: 'deny' })).not.toThrow();
 		} finally {
 			delete process.env.PORTMII_PROVIDER_KEY;
 		}
@@ -317,6 +327,93 @@ describe('errors', () => {
 				() => 1
 			)(context)
 		).rejects.toMatchObject({ code: 'TIMEOUT' });
+	});
+
+	it('lets authorize run denied tools unmetered', async () => {
+		const paths: string[] = [];
+		const grant = { source: 'PAID', planId: 'p1', validTo: '2026-12-01T00:00:00Z' };
+		const denying: typeof globalThis.fetch = async (url) => {
+			paths.push(new URL(url as URL).pathname);
+			return Response.json({ reasonCode: 'usage_limit_exceeded', grant }, { status: 429 });
+		};
+		const decisions: unknown[] = [];
+		const unmetered: unknown[] = [];
+		const allowing = withFetch(denying, 'OAUTH_OR_API_KEY', {
+			onUnavailable: 'deny',
+			authorize: async (decision) => {
+				decisions.push(decision);
+				return 'allow' as const;
+			},
+			onUnmetered: (info) => unmetered.push(info)
+		});
+		await expect(allowing.tool('echo', () => 'ran')(context)).resolves.toBe('ran');
+		expect(decisions).toEqual([{ toolName: 'echo', reasonCode: 'usage_limit_exceeded', grant }]);
+		expect(unmetered).toEqual([{ toolName: 'echo', reason: 'authorized' }]);
+		expect(paths).toEqual(['/v1/mcp/runtime/usage/reservations']);
+
+		let runs = 0;
+		const refusing = withFetch(denying, 'OAUTH_OR_API_KEY', { onUnavailable: 'allow', authorize: () => 'deny' });
+		await expect(refusing.tool('echo', () => ++runs)(context)).rejects.toMatchObject({
+			code: 'ACCESS_DENIED',
+			reasonCode: 'usage_limit_exceeded',
+			grant
+		});
+		expect(runs).toBe(0);
+	});
+
+	it('applies onUnavailable when Portmii cannot answer', { timeout: 10_000 }, async () => {
+		const paths: string[] = [];
+		const down: typeof globalThis.fetch = async (url) => {
+			paths.push(new URL(url as URL).pathname);
+			return Response.json({}, { status: 503 });
+		};
+		const unmetered: unknown[] = [];
+		const open = withFetch(down, 'OAUTH_OR_API_KEY', {
+			onUnavailable: 'allow',
+			authorize: () => {
+				throw new Error('authorize must not run for outages');
+			},
+			onUnmetered: (info) => unmetered.push(info)
+		});
+		await expect(open.tool('echo', () => 'ran')(context)).resolves.toBe('ran');
+		expect(unmetered).toEqual([{ toolName: 'echo', reason: 'unavailable' }]);
+		expect(paths.every((path) => path === '/v1/mcp/runtime/usage/reservations')).toBe(true);
+
+		await expect(withFetch(down).tool('echo', () => 'ran')(context)).rejects.toMatchObject({
+			code: 'HTTP_ERROR',
+			status: 503
+		});
+		const disabled = withFetch(
+			async () => Response.json({ reasonCode: 'feature_disabled' }, { status: 403 }),
+			'OAUTH_OR_API_KEY',
+			{ onUnavailable: 'allow' }
+		);
+		await expect(disabled.tool('echo', () => 'ran')(context)).resolves.toBe('ran');
+	});
+
+	it('never runs unmetered after cancellation or a failing onUnmetered', async () => {
+		let runs = 0;
+		const controller = new AbortController();
+		const hanging = withFetch(
+			(_url, init) =>
+				new Promise((_resolve, reject) => {
+					init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+					controller.abort();
+				}),
+			'OAUTH_OR_API_KEY',
+			{ onUnavailable: 'allow' }
+		);
+		await expect(hanging.tool('e', () => ++runs)({ ...context, signal: controller.signal })).rejects.toMatchObject({
+			code: 'NETWORK_ERROR'
+		});
+
+		const failingHook = withFetch(
+			async () => Response.json({ reasonCode: 'feature_disabled' }, { status: 403 }),
+			'OAUTH_OR_API_KEY',
+			{ onUnavailable: 'allow', onUnmetered: () => Promise.reject(new Error('log down')) }
+		);
+		await expect(failingHook.tool('e', () => ++runs)(context)).rejects.toThrow('log down');
+		expect(runs).toBe(0);
 	});
 
 	it('rejects credentials not enabled or malformed', async () => {

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { customerAuth, PortmiiAuth, type CustomerAuth } from './internal/auth.js';
-import { invalidResponse, isRecord, PortmiiHttpClient } from './internal/http.js';
+import { invalidResponse, isDenial, isRecord, isUnavailable, PortmiiHttpClient } from './internal/http.js';
 import { PortmiiError } from './portmii-error.js';
 import type { PortmiiConfig, PortmiiMiddleware, PortmiiToolContext } from './types.js';
 
@@ -13,12 +13,16 @@ type ProtectedToolHandler<Input, Output, Context extends PortmiiToolContext> = {
 export class Portmii {
 	/** Node/Express middleware: serves OAuth discovery and authenticates requests to the MCP endpoint. */
 	readonly auth: PortmiiMiddleware;
-	private readonly authType: PortmiiConfig['authType'];
+	private readonly config: PortmiiConfig;
 	private readonly http: PortmiiHttpClient;
 
 	constructor(config: PortmiiConfig) {
 		if (!['OAUTH', 'API_KEY', 'OAUTH_OR_API_KEY'].includes(config.authType)) {
 			throw new PortmiiError('authType must be OAUTH, API_KEY or OAUTH_OR_API_KEY', { code: 'INVALID_CONFIG' });
+		}
+		// No default: the provider, not Portmii, decides whether tools run while Portmii is unreachable.
+		if (config.onUnavailable !== 'deny' && config.onUnavailable !== 'allow') {
+			throw new PortmiiError("onUnavailable must be 'deny' or 'allow'", { code: 'INVALID_CONFIG' });
 		}
 		const providerKey = config.providerKey ?? process.env.PORTMII_PROVIDER_KEY;
 		if (typeof providerKey !== 'string' || !providerKey.trim()) {
@@ -26,7 +30,7 @@ export class Portmii {
 				code: 'INVALID_CONFIG'
 			});
 		}
-		this.authType = config.authType;
+		this.config = config;
 		this.http = new PortmiiHttpClient({ ...config, providerKey });
 		this.auth = new PortmiiAuth(config.authType, config.serverUrl, this.http).middleware;
 	}
@@ -34,6 +38,7 @@ export class Portmii {
 	/**
 	 * Wraps an MCP tool callback. Each call is authorized and metered by Portmii:
 	 * usage is reserved before `handler` runs, committed on success and released on failure.
+	 * If Portmii denies or is unavailable, `authorize` or `onUnavailable` decides whether `handler` runs unmetered.
 	 */
 	tool<Input = PortmiiToolContext, Output = unknown, Context extends PortmiiToolContext = PortmiiToolContext>(
 		toolName: string,
@@ -55,8 +60,8 @@ export class Portmii {
 		signal: AbortSignal | undefined,
 		execute: () => Output | Promise<Output>
 	): Promise<Output> {
-		const oauthDisabled = 'accessToken' in auth && this.authType === 'API_KEY';
-		const apiKeyDisabled = 'customerCredential' in auth && this.authType === 'OAUTH';
+		const oauthDisabled = 'accessToken' in auth && this.config.authType === 'API_KEY';
+		const apiKeyDisabled = 'customerCredential' in auth && this.config.authType === 'OAUTH';
 		if (oauthDisabled || apiKeyDisabled) {
 			throw new PortmiiError('Customer authentication method is not enabled', { code: 'ACCESS_DENIED' });
 		}
@@ -64,12 +69,31 @@ export class Portmii {
 		const requestId = randomUUID();
 		signal?.throwIfAborted();
 
-		const reservation = await this.http.post(
-			'/v1/mcp/runtime/usage/reservations',
-			{ ...auth, tool: toolName },
-			requestId,
-			signal
-		);
+		let reservation: unknown;
+		try {
+			reservation = await this.http.post(
+				'/v1/mcp/runtime/usage/reservations',
+				{ ...auth, tool: toolName },
+				requestId,
+				signal
+			);
+		} catch (error) {
+			if (signal?.aborted) throw error;
+			// Portmii's answer is only input; the provider decides whether the tool runs unmetered.
+			const unavailable = isUnavailable(error);
+			const access = unavailable
+				? this.config.onUnavailable
+				: isDenial(error)
+					? await this.config.authorize?.({
+							toolName,
+							reasonCode: error.reasonCode,
+							...(error.grant ? { grant: error.grant } : {})
+						})
+					: undefined;
+			if (access !== 'allow') throw error;
+			await this.config.onUnmetered?.({ toolName, reason: unavailable ? 'unavailable' : 'authorized' });
+			return execute();
+		}
 		if (
 			!isRecord(reservation) ||
 			typeof reservation.reservationId !== 'string' ||
