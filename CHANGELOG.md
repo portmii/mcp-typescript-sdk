@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 - 01.11.2026
+
+- Updated ci workflow and dependencies.
+
+## 0.2.0 - 01.11.2026
+
+Your server now decides access; Portmii's answer is input.
+
+- **Breaking:** `onUnavailable: 'deny' | 'allow'` is required. It applies when Portmii cannot answer (network error, timeout, `5xx`, `feature_disabled`, `dependency_unavailable`). A missing or invalid value throws `INVALID_CONFIG`.
+- `authorize(decision)` hook for calls Portmii denies. `decision` has `toolName`, `reasonCode` and, when sent, `grant`. Without the hook, denied calls fail as before.
+- `onUnmetered({ toolName, reason })` is called before a tool runs without a usage reservation.
+- `PortmiiError.grant` carries the subscription facts of a denial.
+
 ## 0.1.0 - Unreleased
 
 Initial release.

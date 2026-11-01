@@ -7,7 +7,11 @@ import { z } from 'zod/v4';
 // Reads PORTMII_PROVIDER_KEY, MCP_SERVER_URL and optionally PORTMII_BASE_URL from the environment.
 const portmii = createPortmii({
 	authType: 'OAUTH_OR_API_KEY',
-	serverUrl: process.env.MCP_SERVER_URL ?? '' // public HTTPS URL of this endpoint
+	serverUrl: process.env.MCP_SERVER_URL ?? '', // public HTTPS URL of this endpoint
+	// Your server decides access. Portmii's answer is input, not the decision.
+	onUnavailable: 'deny', // or 'allow' to keep tools running while Portmii is unreachable
+	authorize: ({ reasonCode }) => (reasonCode === 'usage_limit_exceeded' ? 'allow' : 'deny'),
+	onUnmetered: ({ toolName, reason }) => console.warn(`${toolName} ran unmetered (${reason})`)
 });
 
 const mcp = createMcpHandler(() => {
