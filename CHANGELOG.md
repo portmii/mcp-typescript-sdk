@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 - 01.11.2026
+
+- Updated ci workflow and dependencies.
+
 ## 0.2.0 - 01.11.2026
 
 Your server now decides access; Portmii's answer is input.
